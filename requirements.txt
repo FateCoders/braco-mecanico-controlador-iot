@@ -1,1 +1,5 @@
-pip install PySide6
+PySide6
+pyserial
+numpy
+matplotlib
+scipy
