@@ -1,344 +1,172 @@
+# interface_view.py
 import tkinter as tk
 from tkinter import ttk
-import serial
-import time
-import numpy as np
+from tkinter import scrolledtext # Para o Log
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from scipy.optimize import fsolve
 
-# =========================
-# Configuração Serial Arduino
-# =========================
-# A conexão não é mais iniciada aqui.
-# Apenas declaramos a variável global.
-arduino = None
+def criar_interface(root, callbacks):
+    """
+    Cria e posiciona todos os widgets da GUI com um layout moderno.
+    'root' é a janela principal do Tkinter.
+    'callbacks' é um dicionário de funções de lógica do main.py
+    """
+    
+    widgets = {} # Dicionário para retornar widgets que precisam ser lidos/atualizados
 
-# =========================
-# Braço Robótico (Sem alterações)
-# =========================
-Lbase, L2, L3, L4 = 19.2, 8.0, 12.0, 8.0
-L_final, Lpen = 0.0, 14.0
-reducoes = [24, 24, 24, 8]
-steps_per_rev_motor = 32
-graus_por_passo = [360 / (steps_per_rev_motor * 64 * r) for r in reducoes]
+    # --- Configuração do Grid Principal ---
+    # Coluna 0 (Plot) será 3x mais larga que a Coluna 1 (Controles)
+    root.grid_columnconfigure(0, weight=3) 
+    root.grid_columnconfigure(1, weight=1)
+    # Linha 0 (Principal) vai expandir, Linha 1 (Log) terá tamanho fixo
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_rowconfigure(1, weight=0)
 
-# =========================
-# Variáveis de posição atual (Sem alterações)
-# =========================
-theta1_atual = theta2_atual = theta3_atual = theta4_atual = 0.0
+    # --- Frame do Plot 3D (Esquerda) ---
+    frame_plot = ttk.Frame(root, padding=10)
+    frame_plot.grid(row=0, column=0, sticky="nsew") # nsew = preenche tudo
+    frame_plot.grid_rowconfigure(0, weight=1)
+    frame_plot.grid_columnconfigure(0, weight=1)
 
-# =========================
-# Funções Arduino (MODIFICADAS)
-# =========================
-def enviar_comando(motor, direcao, passos, delay):
-    # VERIFICAÇÃO DE CONEXÃO:
-    # Só envia o comando se o arduino estiver conectado
-    if arduino is None or not arduino.is_open:
-        print("Erro: Arduino não está conectado. Clique em 'Conectar'.")
-        label_status.config(text="Erro: Arduino não conectado!", foreground="red")
-        return # Para a função aqui
-        
-    try:
-        cmd = f"{motor},{direcao},{passos},{delay}\n"
-        arduino.write(cmd.encode())
-        time.sleep(0.05)
-        while arduino.in_waiting > 0:
-            # Imprime a resposta do Arduino no console
-            print(f"[Arduino]: {arduino.readline().decode().strip()}")
-    except Exception as e:
-        # Se a porta for desconectada durante o uso
-        print(f"Erro na comunicação serial: {e}")
-        desconectar_arduino() # Fecha a conexão
+    fig = plt.figure(figsize=(9, 7)) # Tamanho ajustado
+    ax = fig.add_subplot(111, projection='3d')
+    canvas = FigureCanvasTkAgg(fig, master=frame_plot)
+    canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+    widgets["canvas"] = canvas
+    widgets["ax"] = ax
 
+    # --- Frame Principal de Controles (Direita) ---
+    # Este frame usará .pack() para empilhar os controles verticalmente
+    main_control_frame = ttk.Frame(root, padding=10)
+    main_control_frame.grid(row=0, column=1, sticky="nsew")
 
-def comando_motor(motor_num):
-    direcao = sentido_var[motor_num].get()
-    passos = passos_entry[motor_num].get()
-    delay = delay_entry[motor_num].get()
-    if passos == '': passos = '0'
-    if delay == '': delay = '10'
-    enviar_comando(motor_num + 1, direcao, int(passos), int(delay))
+    # --- Frame de Conexão ---
+    frame_conexao = ttk.LabelFrame(main_control_frame, text="Conexão", padding=10)
+    frame_conexao.pack(fill='x', pady=5) # Empilha verticalmente
 
-def parar_motor(motor_num):
-    enviar_comando(motor_num + 1, 'P', 0, 10)
+    # Frame interno para Porta COM
+    frame_porta = ttk.Frame(frame_conexao)
+    frame_porta.pack(fill='x')
+    ttk.Label(frame_porta, text="Porta COM:").pack(side='left', padx=(0, 5))
+    entry_porta_com = ttk.Entry(frame_porta, width=12)
+    entry_porta_com.insert(0, "COM7")
+    entry_porta_com.pack(side='left', fill='x', expand=True)
+    widgets["entry_porta_com"] = entry_porta_com
 
-# =========================
-# Cinemática direta (Sem alterações)
-# =========================
-def direta(t1, t2, t3, t4):
-    phi1, phi2, phi3 = t2, t2 + t3, t2 + t3 + t4
-    x1, z1 = L2*np.cos(phi1), L2*np.sin(phi1)
-    x2, z2 = x1 + L3*np.cos(phi2), z1 + L3*np.sin(phi2)
-    x3, z3 = x2 + L4*np.cos(phi3), z2 + L4*np.sin(phi3)
-    x_base, z_base = x3 + L_final*np.cos(phi3), z3 + L_final*np.sin(phi3)
-    x_pen, z_pen = x_base + Lpen*np.sin(phi3), z_base - Lpen*np.cos(phi3)
-    xs_local = np.array([0, x1, x2, x3, x_base, x_pen])
-    zs_local = np.array([0, z1, z2, z3, z_base, z_pen])
-    ys_local = np.zeros_like(xs_local)
-    xs = xs_local*np.cos(t1) - ys_local*np.sin(t1)
-    ys = xs_local*np.sin(t1) + ys_local*np.cos(t1)
-    zs = Lbase + zs_local
-    return xs, ys, zs
+    # Frame interno para Botões de Conexão
+    frame_botoes = ttk.Frame(frame_conexao)
+    frame_botoes.pack(fill='x', pady=(5,0))
+    btn_conectar = ttk.Button(frame_botoes, text="Conectar", command=callbacks["conectar"])
+    btn_conectar.pack(side='left', fill='x', expand=True, padx=(0, 2))
+    btn_desconectar = ttk.Button(frame_botoes, text="Desconectar", command=callbacks["desconectar"])
+    btn_desconectar.pack(side='left', fill='x', expand=True, padx=(2, 0))
 
-def angulo_para_passos(delta_rad, motor_idx):
-    return int(round(np.degrees(delta_rad) / graus_por_passo[motor_idx]))
+    label_status = ttk.Label(frame_conexao, text="Desconectado", anchor='center')
+    label_status.pack(fill='x', pady=(5,0))
+    widgets["label_status"] = label_status
 
-def delta_theta(theta_dest, theta_atual):
-    d = theta_dest - theta_atual
-    while d > np.pi: d -= 2*np.pi
-    while d < -np.pi: d += 2*np.pi
-    return d
+    # --- Frame de Posição Atual ---
+    frame_posicao = ttk.LabelFrame(main_control_frame, text="Posição Atual (cm)", padding=10)
+    frame_posicao.pack(fill='x', pady=5)
+    label_coord = ttk.Label(frame_posicao, text="X=0.0, Y=0.0, Z=0.0", anchor='center', font=("Segoe UI", 10))
+    label_coord.pack(fill='x')
+    widgets["label_coord"] = label_coord
 
-# =========================
-# Função de erro para fsolve (Sem alterações)
-# =========================
-def erro_angulos(thetas, x_desejado, y_desejado, z_desejado):
-    t1, t2, t3, t4 = thetas
-    xs, ys, zs = direta(t1, t2, t3, t4)
-    x_atual, y_atual, z_atual = xs[-1], ys[-1], zs[-1]
-    return [
-        x_atual - x_desejado,
-        y_atual - y_desejado,
-        z_atual - z_desejado,
-        t2 + t3 + t4  # mantém pulso “plano”
-    ]
+    # --- Frame de Controle Manual (com os 4 motores) ---
+    frame_manual = ttk.LabelFrame(main_control_frame, text="Controle Manual (Passos)", padding=10)
+    frame_manual.pack(fill='x', pady=5)
 
-def inversa_fsolve(x, y, z, chute_inicial=None):
-    global theta1_atual, theta2_atual, theta3_atual, theta4_atual
-    if chute_inicial is None:
-        chute_inicial = [theta1_atual, theta2_atual, theta3_atual, theta4_atual]
-    sol = fsolve(erro_angulos, chute_inicial, args=(x, y, z))
-    return sol
-
-# =========================
-# Movimento incremental (Sem alterações)
-# =========================
-def calcular_jacobiano(t1, t2, t3, t4, delta=1e-6):
-    f0 = np.array(direta(t1, t2, t3, t4))
-    pos0 = np.array([f0[0,-1], f0[1,-1], f0[2,-1]])
-    J = np.zeros((3,4))
-    thetas = [t1, t2, t3, t4]
+    sentido_var_list = []
+    passos_entry_list = []
+    delay_entry_list = []
+    
+    # Labels para os motores, como na imagem
+    labels = ["J1: Base", "J2: Ombro", "J3: Cotovelo", "J4: Punho"]
+    
     for i in range(4):
-        dtheta = np.zeros(4)
-        dtheta[i] = delta
-        f1 = np.array(direta(*(thetas[j]+dtheta[j] for j in range(4))))
-        pos1 = np.array([f1[0,-1], f1[1,-1], f1[2,-1]])
-        J[:,i] = (pos1 - pos0)/delta
-    return J
-
-def mover_para_coordenada_seguro():
-    global theta1_atual, theta2_atual, theta3_atual, theta4_atual
-    try:
-        x_dest = float(entry_x.get())
-        y_dest = float(entry_y.get())
-        z_dest = float(entry_z.get())
-    except:
-        print("Coordenadas inválidas!")
-        return
-
-    xs, ys, zs = direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-    pos_atual = np.array([xs[-1], ys[-1], zs[-1]])
-    dpos_total = np.array([x_dest, y_dest, z_dest]) - pos_atual
-    distancia = np.linalg.norm(dpos_total)
-    passo_max = 1.0
-    n_passos = int(np.ceil(distancia / passo_max))
-    if n_passos == 0: return
-    dpos_step = dpos_total / n_passos
-
-    for _ in range(n_passos):
-        J = calcular_jacobiano(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-        dtheta = np.linalg.pinv(J) @ dpos_step
-        dif_passos = [int(round(np.degrees(dtheta[i]) / graus_por_passo[i])) for i in range(4)]
-        for i, p in enumerate(dif_passos):
-            if p == 0: continue
-            direcao = 'H' if p < 0 else 'A'
-            enviar_comando(i+1, direcao, abs(p), 10)
-        theta1_atual += dtheta[0]
-        theta2_atual += dtheta[1]
-        theta3_atual += dtheta[2]
-        theta4_atual += dtheta[3]
-        atualizar_plot()
-        root.update_idletasks() # Força a GUI a atualizar
+        # Frame individual para cada motor
+        frame = ttk.LabelFrame(frame_manual, text=labels[i], padding=5)
+        # Organiza os 4 frames em uma grade 2x2
+        frame.grid(row=i//2, column=i%2, padx=2, pady=2, sticky="nsew") 
         
-    label_coord.config(text=f"Pos atual: X={x_dest:.1f}, Y={y_dest:.1f}, Z={z_dest:.1f}")
+        sentido_var = tk.StringVar(value='H')
+        
+        # Frame para os Rádios (Horario/Antihorario)
+        radio_frame = ttk.Frame(frame)
+        radio_frame.pack(fill='x')
+        ttk.Radiobutton(radio_frame, text="Horário", variable=sentido_var, value='H').pack(side='left', expand=True)
+        ttk.Radiobutton(radio_frame, text="Anti-H", variable=sentido_var, value='A').pack(side='left', expand=True)
+        sentido_var_list.append(sentido_var)
+        
+        # Frame para Passos
+        passos_frame = ttk.Frame(frame)
+        passos_frame.pack(fill='x', pady=2)
+        ttk.Label(passos_frame, text="Passos:").pack(side='left')
+        e_passos = ttk.Entry(passos_frame, width=6)
+        e_passos.pack(side='right', fill='x', expand=True)
+        passos_entry_list.append(e_passos)
+        
+        # Frame para Delay
+        delay_frame = ttk.Frame(frame)
+        delay_frame.pack(fill='x', pady=2)
+        ttk.Label(delay_frame, text="Delay(ms):").pack(side='left')
+        e_delay = ttk.Entry(delay_frame, width=6)
+        e_delay.insert(0, '10')
+        e_delay.pack(side='right', fill='x', expand=True)
+        delay_entry_list.append(e_delay)
+        
+        # Frame para Botões de Ação
+        action_frame = ttk.Frame(frame)
+        action_frame.pack(fill='x', pady=2)
+        ttk.Button(action_frame, text="Enviar", command=lambda m=i: callbacks["comando_motor"](m)).pack(side='left', fill='x', expand=True, padx=(0,1))
+        ttk.Button(action_frame, text="Parar", command=lambda m=i: callbacks["parar_motor"](m)).pack(side='left', fill='x', expand=True, padx=(1,0))
 
-# =========================
-# Movimento absoluto com fsolve (Sem alterações)
-# =========================
-def mover_para_absoluto_fsolve():
-    global theta1_atual, theta2_atual, theta3_atual, theta4_atual
-    try:
-        x_abs = float(entry_x.get())
-        y_abs = float(entry_y.get())
-        z_abs = float(entry_z.get())
-    except:
-        print("Coordenadas inválidas!")
-        return
+    widgets["sentido_var_list"] = sentido_var_list
+    widgets["passos_entry_list"] = passos_entry_list
+    widgets["delay_entry_list"] = delay_entry_list
 
-    t1, t2, t3, t4 = inversa_fsolve(x_abs, y_abs, z_abs)
-    deltas = [delta_theta(t1, theta1_atual),
-              delta_theta(t2, theta2_atual),
-              delta_theta(t3, theta3_atual),
-              delta_theta(t4, theta4_atual)]
-    dif_passos = [angulo_para_passos(deltas[i], i) for i in range(4)]
-    for i, p in enumerate(dif_passos):
-        if p == 0: continue
-        direcao = 'H' if p > 0 else 'A'
-        enviar_comando(i+1, direcao, abs(p), 10)
-    theta1_atual, theta2_atual, theta3_atual, theta4_atual = t1, t2, t3, t4
-    atualizar_plot()
-    label_coord.config(text=f"Pos atual: X={x_abs:.1f}, Y={y_abs:.1f}, Z={z_abs:.1f}")
+    # --- Controle por Coordenada (Absoluto) ---
+    frame_coord = ttk.LabelFrame(main_control_frame, text="Mover para Coordenada (cm)", padding=10)
+    frame_coord.pack(fill='x', pady=5)
+    
+    # Frame para as Entradas X, Y, Z
+    entry_coord_frame = ttk.Frame(frame_coord)
+    entry_coord_frame.pack(fill='x')
+    
+    ttk.Label(entry_coord_frame, text="X:").pack(side='left')
+    entry_x = ttk.Entry(entry_coord_frame, width=6); entry_x.pack(side='left', fill='x', expand=True, padx=2)
+    widgets["entry_x"] = entry_x
+    
+    ttk.Label(entry_coord_frame, text="Y:").pack(side='left')
+    entry_y = ttk.Entry(entry_coord_frame, width=6); entry_y.pack(side='left', fill='x', expand=True, padx=2)
+    widgets["entry_y"] = entry_y
+    
+    ttk.Label(entry_coord_frame, text="Z:").pack(side='left')
+    entry_z = ttk.Entry(entry_coord_frame, width=6); entry_z.pack(side='left', fill='x', expand=True, padx=2)
+    widgets["entry_z"] = entry_z
+    
+    # Botões de movimento
+    ttk.Button(frame_coord, text="Mover Absoluto (fsolve)", command=callbacks["mover_absoluto"]).pack(fill='x', pady=(5,2))
+    ttk.Button(frame_coord, text="Mover Incremental (Seguro)", command=callbacks["mover_incremental"]).pack(fill='x', pady=2)
 
-# =========================
-# Movimento juntas de teste (Sem alterações)
-# =========================
-def mover_junta_temp(junta_idx, delta_graus=5, delay_ms=10, espera_s=10):
-    passos = int(round(delta_graus / graus_por_passo[junta_idx]))
-    enviar_comando(junta_idx+1, 'H', passos, delay_ms)
-    time.sleep(espera_s)
-    enviar_comando(junta_idx+1, 'A', passos, delay_ms)
-    time.sleep(espera_s)
-
-# =========================
-# Plot 3D integrado (Sem alterações)
-# =========================
-def atualizar_plot():
-    xs, ys, zs = direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-    ax.clear()
-    base_size, base_height = 5, Lbase
-    xx = [-base_size, base_size, base_size, -base_size, -base_size]
-    yy = [-base_size, -base_size, base_size, base_size, -base_size]
-    ax.plot3D(xx, yy, np.zeros_like(xx), color='gray')
-    ax.plot3D(xx, yy, np.full_like(xx, base_height), color='gray')
+    # --- Frame de Predefinições (antigo "Testes") ---
+    frame_testes = ttk.LabelFrame(main_control_frame, text="Predefinições e Testes", padding=10)
+    frame_testes.pack(fill='x', pady=5)
+    
+    # Frame para os botões de teste
+    testes_btn_frame = ttk.Frame(frame_testes)
+    testes_btn_frame.pack(fill='x')
+    
+    ttk.Label(testes_btn_frame, text="Testar 5°:").pack(side='left', padx=(0,5))
     for i in range(4):
-        ax.plot3D([xx[i], xx[i]], [yy[i], yy[i]], [0, base_height], color='gray')
-    ax.plot(xs, ys, zs, '-o', linewidth=3, markersize=6)
-    ax.scatter(xs[-2], ys[-2], zs[-2], color='blue', s=80)
-    ax.scatter(xs[-1], ys[-1], zs[-1], color='red', s=100)
-    ax.set_xlabel('X (cm)')
-    ax.set_ylabel('Y (cm)')
-    ax.set_zlabel('Z (cm)')
-    ax.set_title('Braço Robótico 4R')
-    ax.view_init(elev=30, azim=60)
+        ttk.Button(testes_btn_frame, text=f"J{i+1}", width=4, command=lambda j=i: callbacks["mover_junta_temp"](j)).pack(side='left', fill='x', expand=True, padx=1)
+
+    # --- Frame do Log (Inferior) ---
+    frame_log = ttk.LabelFrame(root, text="Log de Comandos", padding=5)
+    frame_log.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
     
-    # Define limites fixos para o gráfico não pular
-    max_L = L2 + L3 + L4 + Lpen
-    ax.set_xlim(-max_L, max_L)
-    ax.set_ylim(-max_L, max_L)
-    ax.set_zlim(0, Lbase + max_L)
+    log_widget = scrolledtext.ScrolledText(frame_log, height=8, wrap=tk.WORD, state='disabled')
+    log_widget.pack(fill='both', expand=True)
+    widgets["log_widget"] = log_widget
     
-    canvas.draw()
-
-# =========================
-# NOVAS Funções de Conexão
-# =========================
-def conectar_arduino():
-    global arduino
-    porta_com = entry_porta_com.get()
-    baud_rate = 9600
-    
-    if arduino and arduino.is_open:
-        desconectar_arduino()
-        
-    try:
-        arduino = serial.Serial(porta_com, baud_rate, timeout=1)
-        time.sleep(2) # Espera a conexão estabilizar
-        label_status.config(text=f"Conectado em {porta_com}", foreground="green")
-        print(f"Conexão {porta_com} estabelecida.")
-        # Lê a mensagem "pronto" do Arduino
-        if arduino.in_waiting > 0:
-            print(f"[Arduino]: {arduino.readline().decode().strip()}")
-            
-    except Exception as e:
-        arduino = None
-        label_status.config(text=f"Falha ao conectar em {porta_com}", foreground="red")
-        print(f"Erro ao conectar: {e}")
-
-def desconectar_arduino():
-    global arduino
-    if arduino and arduino.is_open:
-        arduino.close()
-        print("Conexão serial fechada.")
-    arduino = None
-    label_status.config(text="Desconectado", foreground="black")
-
-
-# =========================
-# Interface Tkinter (MODIFICADA)
-# =========================
-root = tk.Tk()
-root.title("Controle de Motores 28BYJ-48")
-
-# --- Frame de Conexão (NOVO) ---
-# Colocado na coluna 4, ao lado dos motores
-frame_conexao = ttk.LabelFrame(root, text="Conexão", padding=10)
-frame_conexao.grid(row=0, column=4, padx=5, pady=5, sticky="ns") # ns = North-South (vertical)
-
-ttk.Label(frame_conexao, text="Porta COM:").pack(anchor='w')
-entry_porta_com = ttk.Entry(frame_conexao, width=10)
-entry_porta_com.insert(0, "COM7") # Coloque sua porta padrão aqui
-entry_porta_com.pack(anchor='w', pady=2)
-
-btn_conectar = ttk.Button(frame_conexao, text="Conectar", command=conectar_arduino)
-btn_conectar.pack(pady=2, fill='x') # fill='x' faz o botão preencher o espaço
-
-btn_desconectar = ttk.Button(frame_conexao, text="Desconectar", command=desconectar_arduino)
-btn_desconectar.pack(pady=2, fill='x')
-
-label_status = ttk.Label(frame_conexao, text="Desconectado", foreground="black")
-label_status.pack(pady=5)
-
-
-# --- Frames dos Motores (sem alterações na lógica interna) ---
-sentido_var, passos_entry, delay_entry = [], [], []
-for i in range(4):
-    frame = ttk.LabelFrame(root, text=f"Motor {i+1}", padding=10)
-    frame.grid(row=0, column=i, padx=5, pady=5)
-    sentido_var.append(tk.StringVar(value='H'))
-    ttk.Radiobutton(frame, text="Horario", variable=sentido_var[i], value='H').pack(anchor='w')
-    ttk.Radiobutton(frame, text="Antihorario", variable=sentido_var[i], value='A').pack(anchor='w')
-    ttk.Label(frame, text="Passos:").pack(anchor='w')
-    e_passos = ttk.Entry(frame, width=10); e_passos.pack(anchor='w'); passos_entry.append(e_passos)
-    ttk.Label(frame, text="Delay (ms):").pack(anchor='w')
-    e_delay = ttk.Entry(frame, width=10); e_delay.insert(0, '10'); e_delay.pack(anchor='w'); delay_entry.append(e_delay)
-    ttk.Button(frame, text="Enviar", command=lambda m=i: comando_motor(m)).pack(pady=2)
-    ttk.Button(frame, text="Parar", command=lambda m=i: parar_motor(m)).pack(pady=2)
-
-# --- Controle por coordenadas (Modificado columnspan) ---
-frame_coord = ttk.LabelFrame(root, text="Mover por Coordenada (cm)", padding=10)
-frame_coord.grid(row=1, column=0, columnspan=5, padx=5, pady=10, sticky='ew') # columnspan=5
-ttk.Label(frame_coord, text="X:").grid(row=0,column=0); entry_x = ttk.Entry(frame_coord, width=10); entry_x.grid(row=0,column=1)
-ttk.Label(frame_coord, text="Y:").grid(row=0,column=2); entry_y = ttk.Entry(frame_coord, width=10); entry_y.grid(row=0,column=3)
-ttk.Label(frame_coord, text="Z:").grid(row=0,column=4); entry_z = ttk.Entry(frame_coord, width=10); entry_z.grid(row=0,column=5)
-ttk.Button(frame_coord, text="Mover Incremental", command=mover_para_coordenada_seguro).grid(row=0,column=6, padx=5)
-ttk.Button(frame_coord, text="Mover Absoluto (fsolve)", command=mover_para_absoluto_fsolve).grid(row=0,column=7, padx=5)
-
-# --- Botões de teste juntas (Modificado grid e columnspan) ---
-frame_testes = ttk.LabelFrame(root, text="Teste 5° por junta", padding=10)
-frame_testes.grid(row=2, column=0, columnspan=5, padx=5, pady=10, sticky='ew') # columnspan=5
-for i in range(4):
-    ttk.Button(frame_testes, text=f"Junta {i+1}", command=lambda j=i: mover_junta_temp(j)).grid(row=0, column=i, padx=5)
-
-# --- Label posição atual (Modificado grid e columnspan) ---
-xs_init, ys_init, zs_init = direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-x_init, y_init, z_init = xs_init[-1], ys_init[-1], zs_init[-1]
-label_coord = ttk.Label(root, text=f"Pos atual: X={x_init:.1f}, Y={y_init:.1f}, Z={z_init:.1f}")
-label_coord.grid(row=3, column=0, columnspan=5, pady=5) # columnspan=5
-
-# --- Plot 3D (Modificado grid e columnspan) ---
-fig = plt.figure(figsize=(8,6))
-ax = fig.add_subplot(111, projection='3d')
-canvas = FigureCanvasTkAgg(fig, master=root)
-canvas.get_tk_widget().grid(row=4, column=0, columnspan=5) # columnspan=5
-atualizar_plot()
-
-# --- Função de Fechamento (NOVO) ---
-# Garante que a porta serial seja fechada ao fechar a janela
-def on_closing():
-    print("Fechando a aplicação...")
-    desconectar_arduino()
-    root.destroy()
-
-root.protocol("WM_DELETE_WINDOW", on_closing)
-root.mainloop()
+    return widgets
