@@ -16,23 +16,37 @@ theta2_atual = 0.0
 theta3_atual = 0.0
 theta4_atual = 0.0
 
+is_conectado = False # <-- Variável de estado para o botão de toggle
+
 # ===============================================
 # Funções de Lógica / Callbacks
 # (São as funções que os botões da interface irão chamar)
 # ===============================================
 
-def conectar_callback():
-    porta = widgets["entry_porta_com"].get()
-    sucesso, status_msg, _ = COM.conectar_arduino(porta)
+# --- ALTERAÇÃO: Função de Conexão Única (Toggle) ---
+def toggle_conexao_callback():
+    global is_conectado
     
-    if sucesso:
-        widgets["label_status"].config(text=status_msg, foreground="green")
+    if is_conectado:
+        # --- Lógica de Desconectar ---
+        COM.desconectar_arduino()
+        widgets["label_status"].config(text="Desconectado", foreground="black")
+        widgets["btn_toggle_conexao"].config(text="Conectar")
+        is_conectado = False
     else:
-        widgets["label_status"].config(text=status_msg, foreground="red")
+        # --- Lógica de Conectar ---
+        porta = widgets["entry_porta_com"].get()
+        sucesso, status_msg, _ = COM.conectar_arduino(porta)
+        
+        if sucesso:
+            widgets["label_status"].config(text=status_msg, foreground="green")
+            widgets["btn_toggle_conexao"].config(text="Desconectar")
+            is_conectado = True
+        else:
+            widgets["label_status"].config(text=status_msg, foreground="red")
+            is_conectado = False # Garante que continua falso
+# --- Fim da Alteração ---
 
-def desconectar_callback():
-    COM.desconectar_arduino()
-    widgets["label_status"].config(text="Desconectado", foreground="black")
 
 def comando_motor_callback(motor_num):
     direcao = widgets["sentido_var_list"][motor_num].get()
@@ -75,12 +89,10 @@ def mover_para_coordenada_seguro():
     z_dest = z_atual + z_delta
     # --- FIM DA MODIFICAÇÃO ---
 
-    # O código original continua daqui, usando os x_dest, y_dest, z_dest recém-calculados
     dpos_total = np.array([x_dest, y_dest, z_dest]) - pos_atual
     distancia = np.linalg.norm(dpos_total)
     passo_max = 1.0 # Move 1.0 cm por passo
     
-    # Previne divisão por zero
     n_passos = int(np.ceil(distancia / passo_max))
     if n_passos == 0: 
         print("Já está no destino (ou delta é zero).")
@@ -140,7 +152,6 @@ def mover_para_absoluto_fsolve():
     
     for i, p in enumerate(dif_passos):
         if p == 0: continue
-        # Atenção: verifique se H e A estão corretos para sua montagem
         direcao = 'H' if p > 0 else 'A' 
         COM.enviar_comando(i+1, direcao, abs(p), 10)
         
@@ -152,7 +163,7 @@ def mover_para_absoluto_fsolve():
 def mover_junta_temp(junta_idx):
     delta_graus=5
     delay_ms=10
-    espera_s=2 # Reduzido para testes
+    espera_s=2 
     
     passos = int(round(delta_graus / C.graus_por_passo[junta_idx]))
     print(f"Testando Junta {junta_idx+1} ({passos} passos)")
@@ -166,7 +177,7 @@ def mover_junta_temp(junta_idx):
 def atualizar_plot():
     xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
     
-    ax = widgets["ax"] # Pega o eixo do plot (criado na view)
+    ax = widgets["ax"] 
     ax.clear()
     
     # Desenha a base
@@ -195,17 +206,19 @@ def atualizar_plot():
     ax.set_ylim(-max_L, max_L)
     ax.set_zlim(0, C.Lbase + max_L)
     
-    widgets["canvas"].draw() # Atualiza o canvas (criado na view)
+    widgets["canvas"].draw() 
     
     # Atualiza a posição no label
     x_atual, y_atual, z_atual = xs[-1], ys[-1], zs[-1]
     widgets["label_coord"].config(text=f"Pos atual: X={x_atual:.1f}, Y={y_atual:.1f}, Z={z_atual:.1f}")
 
 
+# --- ALTERAÇÃO: Atualiza a função de fechamento ---
 def on_closing_callback():
     print("Fechando a aplicação...")
-    desconectar_callback()
+    COM.desconectar_arduino() # Chama a função de comunicação diretamente
     root.destroy()
+# --- Fim da Alteração ---
 
 # =========================
 # Execução Principal
@@ -215,27 +228,21 @@ if __name__ == "__main__":
     root = tk.Tk()
     root.title("Controle Braço Robótico IoT")
 
-    # Cria um dicionário com todas as funções de lógica
-    # que a interface precisa saber
+    # --- ALTERAÇÃO: Atualiza o dicionário de callbacks ---
     callbacks = {
-        "conectar": conectar_callback,
-        "desconectar": desconectar_callback,
+        "toggle_conexao": toggle_conexao_callback,
         "comando_motor": comando_motor_callback,
         "parar_motor": parar_motor_callback,
         "mover_incremental": mover_para_coordenada_seguro,
         "mover_absoluto": mover_para_absoluto_fsolve,
         "mover_junta_temp": mover_junta_temp,
     }
+    # --- Fim da Alteração ---
 
-    # Chama a função para criar a interface
-    # Ela retorna os widgets que precisamos acessar (labels, entries, etc.)
     widgets = interface.criar_interface(root, callbacks)
 
-    # Configura o plot inicial
     atualizar_plot()
 
-    # Configura a função de fechamento
     root.protocol("WM_DELETE_WINDOW", on_closing_callback)
     
-    # Inicia a aplicação
     root.mainloop()
