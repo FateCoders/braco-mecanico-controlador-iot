@@ -51,16 +51,31 @@ def parar_motor_callback(motor_num):
 
 def mover_para_coordenada_seguro():
     global theta1_atual, theta2_atual, theta3_atual, theta4_atual
+    
+    # --- INÍCIO DA MODIFICAÇÃO (Lógica Relativa) ---
+    # 1. Pega a posição X, Y, Z atual
+    xs_atuais, ys_atuais, zs_atuais = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
+    x_atual = xs_atuais[-1]
+    y_atual = ys_atuais[-1]
+    z_atual = zs_atuais[-1]
+    pos_atual = np.array([x_atual, y_atual, z_atual])
+            
     try:
-        x_dest = float(widgets["entry_x"].get())
-        y_dest = float(widgets["entry_y"].get())
-        z_dest = float(widgets["entry_z"].get())
+        # 2. Lê os valores DELTA (quanto mover) dos campos
+        x_delta = float(widgets["entry_x"].get())
+        y_delta = float(widgets["entry_y"].get())
+        z_delta = float(widgets["entry_z"].get())
     except Exception as e:
         print(f"Coordenadas inválidas: {e}")
         return
 
-    xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-    pos_atual = np.array([xs[-1], ys[-1], zs[-1]])
+    # 3. Calcula o novo destino SOMANDO
+    x_dest = x_atual + x_delta
+    y_dest = y_atual + y_delta
+    z_dest = z_atual + z_delta
+    # --- FIM DA MODIFICAÇÃO ---
+
+    # O código original continua daqui, usando os x_dest, y_dest, z_dest recém-calculados
     dpos_total = np.array([x_dest, y_dest, z_dest]) - pos_atual
     distancia = np.linalg.norm(dpos_total)
     passo_max = 1.0 # Move 1.0 cm por passo
@@ -68,7 +83,7 @@ def mover_para_coordenada_seguro():
     # Previne divisão por zero
     n_passos = int(np.ceil(distancia / passo_max))
     if n_passos == 0: 
-        print("Já está no destino.")
+        print("Já está no destino (ou delta é zero).")
         return
         
     dpos_step = dpos_total / n_passos
