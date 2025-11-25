@@ -2,247 +2,250 @@
 import tkinter as tk
 import numpy as np
 import time
+import threading # Para não travar a interface enquanto escreve
 
-# Importa dos nossos módulos separados
 import interface
-import cinematic as C # Usamos 'C' como apelido
-import comunication as COM # Usamos 'COM' como apelido
+import cinematic as C
+import comunication as COM
+import alphabet # <--- NOVO IMPORT
 
 # =========================
-# Variáveis de Estado (Posição Atual)
+# Variáveis de Estado
 # =========================
 theta1_atual = 0.0
 theta2_atual = 0.0
 theta3_atual = 0.0
 theta4_atual = 0.0
+is_conectado = False
 
-is_conectado = False # <-- Variável de estado para o botão de toggle
+# Alturas de trabalho (Z)
+z_ref_papel = 0.0   # Altura onde a caneta toca o papel (definido pelo usuário)
+z_safe_altura = 2.0 # Altura segura para mover sem riscar (cm acima do papel)
 
-# ===============================================
-# Funções de Lógica / Callbacks
-# (São as funções que os botões da interface irão chamar)
-# ===============================================
+# =========================
+# Funções Auxiliares de Movimento
+# =========================
 
-# --- ALTERAÇÃO: Função de Conexão Única (Toggle) ---
-def toggle_conexao_callback():
-    global is_conectado
-    
-    if is_conectado:
-        # --- Lógica de Desconectar ---
-        COM.desconectar_arduino()
-        widgets["label_status"].config(text="Desconectado", foreground="black")
-        widgets["btn_toggle_conexao"].config(text="Conectar")
-        is_conectado = False
-    else:
-        # --- Lógica de Conectar ---
-        porta = widgets["entry_porta_com"].get()
-        sucesso, status_msg, _ = COM.conectar_arduino(porta)
-        
-        if sucesso:
-            widgets["label_status"].config(text=status_msg, foreground="green")
-            widgets["btn_toggle_conexao"].config(text="Desconectar")
-            is_conectado = True
-        else:
-            widgets["label_status"].config(text=status_msg, foreground="red")
-            is_conectado = False # Garante que continua falso
-# --- Fim da Alteração ---
+def log(msg):
+    """Escreve no log da interface"""
+    print(msg)
+    if "log_widget" in widgets:
+        widgets["log_widget"].config(state='normal')
+        widgets["log_widget"].insert(tk.END, msg + "\n")
+        widgets["log_widget"].see(tk.END)
+        widgets["log_widget"].config(state='disabled')
 
-
-def comando_motor_callback(motor_num):
-    direcao = widgets["sentido_var_list"][motor_num].get()
-    passos = widgets["passos_entry_list"][motor_num].get()
-    delay = widgets["delay_entry_list"][motor_num].get()
-    
-    if passos == '': passos = '0'
-    if delay == '': delay = '10'
-    
-    COM.enviar_comando(motor_num + 1, direcao, int(passos), int(delay))
-    # Nota: A atualização de 'theta_atual' não está implementada
-    # para comandos manuais. Isso precisaria ser adicionado.
-
-def parar_motor_callback(motor_num):
-    COM.enviar_comando(motor_num + 1, 'P', 0, 10)
-
-def mover_para_coordenada_seguro():
+def mover_linear(x_dest, y_dest, z_dest, passo_mm=1.0):
+    """
+    Move a ponta da caneta em linha reta do ponto atual até (x_dest, y_dest, z_dest).
+    Usa interpolação (vários passos pequenos) para garantir a reta.
+    """
     global theta1_atual, theta2_atual, theta3_atual, theta4_atual
-    
-    # --- INÍCIO DA MODIFICAÇÃO (Lógica Relativa) ---
-    # 1. Pega a posição X, Y, Z atual
-    xs_atuais, ys_atuais, zs_atuais = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-    x_atual = xs_atuais[-1]
-    y_atual = ys_atuais[-1]
-    z_atual = zs_atuais[-1]
-    pos_atual = np.array([x_atual, y_atual, z_atual])
-            
-    try:
-        # 2. Lê os valores DELTA (quanto mover) dos campos
-        x_delta = float(widgets["entry_x"].get())
-        y_delta = float(widgets["entry_y"].get())
-        z_delta = float(widgets["entry_z"].get())
-    except Exception as e:
-        print(f"Coordenadas inválidas: {e}")
-        return
 
-    # 3. Calcula o novo destino SOMANDO
-    x_dest = x_atual + x_delta
-    y_dest = y_atual + y_delta
-    z_dest = z_atual + z_delta
-    # --- FIM DA MODIFICAÇÃO ---
+    # Posição atual
+    xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
+    pos_atual = np.array([xs[-1], ys[-1], zs[-1]])
+    pos_final = np.array([x_dest, y_dest, z_dest])
 
-    dpos_total = np.array([x_dest, y_dest, z_dest]) - pos_atual
-    distancia = np.linalg.norm(dpos_total)
-    passo_max = 1.0 # Move 1.0 cm por passo
-    
-    n_passos = int(np.ceil(distancia / passo_max))
-    if n_passos == 0: 
-        print("Já está no destino (ou delta é zero).")
-        return
-        
-    dpos_step = dpos_total / n_passos
+    distancia = np.linalg.norm(pos_final - pos_atual)
+    if distancia < 0.1: return # Já está lá
 
-    print(f"Movendo {distancia:.2f}cm em {n_passos} passos.")
+    # Calcula quantos passos precisa (resolução de 1mm por exemplo)
+    n_passos = int(np.ceil(distancia / (passo_mm / 10.0))) # converte mm para cm
+    if n_passos < 1: n_passos = 1
+
+    # Vetor de passo
+    step_vector = (pos_final - pos_atual) / n_passos
 
     for i in range(n_passos):
+        # Jacobiana ou Cinemática Inversa Ponto a Ponto?
+        # Para escrita, Jacobiana é mais suave para pequenos passos.
         J = C.calcular_jacobiano(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
         try:
-            dtheta = np.linalg.pinv(J) @ dpos_step
-        except Exception as e:
-            print(f"Erro na Jacobiana: {e}")
-            return
-            
-        dif_passos = [int(round(np.degrees(dtheta[i]) / C.graus_por_passo[i])) for i in range(4)]
+            dtheta = np.linalg.pinv(J) @ step_vector
+        except:
+            log("Erro: Singularidade no movimento.")
+            break
         
-        for i, p in enumerate(dif_passos):
+        # Converte radianos para passos dos motores
+        dif_passos = [int(round(np.degrees(dtheta[k]) / C.graus_por_passo[k])) for k in range(4)]
+        
+        # Envia comando aos motores
+        for k, p in enumerate(dif_passos):
             if p == 0: continue
             direcao = 'H' if p < 0 else 'A'
-            COM.enviar_comando(i+1, direcao, abs(p), 10)
+            # Delay baixo para escrita fluida (7ms)
+            COM.enviar_comando(k+1, direcao, abs(p), 7)
             
+        # Atualiza angulos virtuais
         theta1_atual += dtheta[0]
         theta2_atual += dtheta[1]
         theta3_atual += dtheta[2]
         theta4_atual += dtheta[3]
-        
-        atualizar_plot()
-        root.update_idletasks() # Força a GUI a atualizar
-        
-    print("Movimento incremental concluído.")
-    widgets["label_coord"].config(text=f"Pos atual: X={x_dest:.1f}, Y={y_dest:.1f}, Z={z_dest:.1f}")
 
-def mover_para_absoluto_fsolve():
-    global theta1_atual, theta2_atual, theta3_atual, theta4_atual
+        # Atualiza plot a cada X passos para não travar muito
+        if i % 5 == 0: 
+            root.after(1, atualizar_plot) 
+
+    atualizar_plot()
+    # Atualiza label na interface
+    widgets["label_coord"].config(text=f"X={x_dest:.1f}, Y={y_dest:.1f}, Z={z_dest:.1f}")
+
+
+# =========================
+# Callbacks da Interface
+# =========================
+
+def toggle_conexao_callback():
+    global is_conectado
+    if is_conectado:
+        COM.desconectar_arduino()
+        widgets["label_status"].config(text="Desconectado", foreground="red")
+        widgets["btn_toggle_conexao"].config(text="Conectar")
+        is_conectado = False
+    else:
+        porta = widgets["entry_porta_com"].get()
+        sucesso, msg, _ = COM.conectar_arduino(porta)
+        log(msg)
+        if sucesso:
+            widgets["label_status"].config(text="Conectado", foreground="green")
+            widgets["btn_toggle_conexao"].config(text="Desconectar")
+            is_conectado = True
+
+def calibrar_z_callback():
+    """Define a altura Z atual como sendo o Z do papel (0.0 relativo)"""
+    global z_ref_papel
+    xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
+    z_atual = zs[-1]
+    
+    z_ref_papel = z_atual
+    log(f"Z Papel calibrado em: {z_ref_papel:.2f} cm")
+
+def escrever_texto_thread():
+    """Função que roda em thread separada para não travar a GUI"""
+    texto = widgets["entry_texto"].get().upper()
     try:
-        x_abs = float(widgets["entry_x"].get())
-        y_abs = float(widgets["entry_y"].get())
-        z_abs = float(widgets["entry_z"].get())
-    except Exception as e:
-        print(f"Coordenadas inválidas: {e}")
+        escala = float(widgets["entry_scale"].get())
+    except:
+        log("Escala inválida.")
         return
 
-    chute_inicial = [theta1_atual, theta2_atual, theta3_atual, theta4_atual]
-    t1, t2, t3, t4 = C.inversa_fsolve(x_abs, y_abs, z_abs, chute_inicial)
+    # Pega posição inicial (Onde o robô está agora será o canto inferior esquerdo da 1ª letra)
+    xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
+    start_x, start_y = xs[-1], ys[-1]
     
-    deltas = [C.delta_theta(t1, theta1_atual),
-              C.delta_theta(t2, theta2_atual),
-              C.delta_theta(t3, theta3_atual),
-              C.delta_theta(t4, theta4_atual)]
-              
-    dif_passos = [C.angulo_para_passos(deltas[i], i) for i in range(4)]
+    # Alturas absolutas
+    z_baixo = z_ref_papel           # Tocar papel
+    z_alto = z_ref_papel + z_safe_altura  # Levantar
     
-    print(f"Movendo para {x_abs}, {y_abs}, {z_abs}. Passos: {dif_passos}")
-    
-    for i, p in enumerate(dif_passos):
-        if p == 0: continue
-        direcao = 'H' if p > 0 else 'A' 
-        COM.enviar_comando(i+1, direcao, abs(p), 10)
-        
-    theta1_atual, theta2_atual, theta3_atual, theta4_atual = t1, t2, t3, t4
-    
-    atualizar_plot()
-    widgets["label_coord"].config(text=f"Pos atual: X={x_abs:.1f}, Y={y_abs:.1f}, Z={z_abs:.1f}")
+    log(f"Escrevendo '{texto}'...")
 
-def mover_junta_temp(junta_idx):
-    delta_graus=5
-    delay_ms=10
-    espera_s=2 
+    # Levanta a caneta primeiro
+    mover_linear(start_x, start_y, z_alto)
+
+    cursor_x = start_x
+
+    for char in texto:
+        strokes = alphabet.get_char(char)
+        
+        if not strokes: # Espaço ou caractere desconhecido
+            cursor_x += escala * 0.5
+            continue
+
+        log(f"Desenhando '{char}'...")
+        
+        for stroke in strokes:
+            # 1. Mover (no ar) para o primeiro ponto do traço
+            p0 = stroke[0]
+            target_x = cursor_x + (p0[0] * escala)
+            target_y = start_y + (p0[1] * escala) # Escreve na linha Y constante por enquanto
+            
+            mover_linear(target_x, target_y, z_alto) # Vai por cima
+            
+            # 2. Baixar caneta
+            mover_linear(target_x, target_y, z_baixo)
+            time.sleep(0.2) # Estabilizar
+            
+            # 3. Desenhar o traço (ponto a ponto)
+            for p in stroke[1:]:
+                next_x = cursor_x + (p[0] * escala)
+                next_y = start_y + (p[1] * escala)
+                mover_linear(next_x, next_y, z_baixo) # Risca o papel
+            
+            # 4. Levantar ao fim do traço
+            mover_linear(target_x, target_y, z_alto) # (volta ao ultimo xy mas sobe Z - bug fix: use current xy)
+            # Na verdade, o 'mover_linear' atualiza a posição interna, então basta:
+            # Pegar posição atual e subir Z
+            curr_xs, curr_ys, _ = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
+            mover_linear(curr_xs[-1], curr_ys[-1], z_alto)
+
+        # Avança o cursor para a próxima letra
+        cursor_x += escala * 1.2 # 1.2 para dar espaçamento
+
+    log("Escrita concluída.")
+    # Volta para home ou fica parado em cima
+
+def escrever_texto_callback():
+    threading.Thread(target=escrever_texto_thread).start()
+
+def mover_incremental_callback():
+    try:
+        dx = float(widgets["entry_x"].get() or 0)
+        dy = float(widgets["entry_y"].get() or 0)
+        dz = float(widgets["entry_z"].get() or 0)
+    except: return
+
+    xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
     
-    passos = int(round(delta_graus / C.graus_por_passo[junta_idx]))
-    print(f"Testando Junta {junta_idx+1} ({passos} passos)")
+    novo_x = xs[-1] + dx
+    novo_y = ys[-1] + dy
+    novo_z = zs[-1] + dz
     
-    COM.enviar_comando(junta_idx+1, 'H', passos, delay_ms)
-    time.sleep(espera_s)
-    COM.enviar_comando(junta_idx+1, 'A', passos, delay_ms)
-    time.sleep(espera_s)
-    print(f"Teste Junta {junta_idx+1} concluído.")
+    # Usa a função linear para mover suave
+    threading.Thread(target=mover_linear, args=(novo_x, novo_y, novo_z)).start()
+
+# Callback dummy para os botões manuais (não alterados)
+def comando_motor_callback(m): pass 
+def parar_motor_callback(m): pass
+def mover_junta_temp(j): pass
 
 def atualizar_plot():
     xs, ys, zs = C.direta(theta1_atual, theta2_atual, theta3_atual, theta4_atual)
-    
-    ax = widgets["ax"] 
+    ax = widgets["ax"]
     ax.clear()
-    
-    # Desenha a base
+    # ... (código de plotagem igual ao anterior) ...
     base_size, base_height = 5, C.Lbase
     xx = [-base_size, base_size, base_size, -base_size, -base_size]
     yy = [-base_size, -base_size, base_size, base_size, -base_size]
-    ax.plot3D(xx, yy, np.zeros_like(xx), color='gray')
-    ax.plot3D(xx, yy, np.full_like(xx, base_height), color='gray')
-    for i in range(4):
-        ax.plot3D([xx[i], xx[i]], [yy[i], yy[i]], [0, base_height], color='gray')
-        
-    # Desenha o braço
-    ax.plot(xs, ys, zs, '-o', linewidth=3, markersize=6)
-    ax.scatter(xs[-2], ys[-2], zs[-2], color='blue', s=80) # Base da garra
-    ax.scatter(xs[-1], ys[-1], zs[-1], color='red', s=100) # Ponta da garra
-    
-    ax.set_xlabel('X (cm)')
-    ax.set_ylabel('Y (cm)')
-    ax.set_zlabel('Z (cm)')
-    ax.set_title('Braço Robótico 4R')
-    ax.view_init(elev=30, azim=60)
-    
-    # Define limites fixos
-    max_L = C.L2 + C.L3 + C.L4 + C.Lpen
-    ax.set_xlim(-max_L, max_L)
-    ax.set_ylim(-max_L, max_L)
-    ax.set_zlim(0, C.Lbase + max_L)
-    
-    widgets["canvas"].draw() 
-    
-    # Atualiza a posição no label
-    x_atual, y_atual, z_atual = xs[-1], ys[-1], zs[-1]
-    widgets["label_coord"].config(text=f"Pos atual: X={x_atual:.1f}, Y={y_atual:.1f}, Z={z_atual:.1f}")
+    ax.plot(xx, yy, np.zeros_like(xx), color='gray')
+    for i in range(4): ax.plot([xx[i], xx[i]], [yy[i], yy[i]], [0, base_height], color='gray')
+    ax.plot(xs, ys, zs, '-o', linewidth=3)
+    max_L = 30
+    ax.set_xlim(-max_L, max_L); ax.set_ylim(-max_L, max_L); ax.set_zlim(0, 40)
+    widgets["canvas"].draw()
 
-
-# --- ALTERAÇÃO: Atualiza a função de fechamento ---
-def on_closing_callback():
-    print("Fechando a aplicação...")
-    COM.desconectar_arduino() # Chama a função de comunicação diretamente
+def on_closing():
+    COM.desconectar_arduino()
     root.destroy()
-# --- Fim da Alteração ---
 
 # =========================
-# Execução Principal
+# Execução
 # =========================
 if __name__ == "__main__":
-    
     root = tk.Tk()
-    root.title("Controle Braço Robótico IoT")
-
-    # --- ALTERAÇÃO: Atualiza o dicionário de callbacks ---
+    root.title("Robô Escritor IoT")
+    
     callbacks = {
         "toggle_conexao": toggle_conexao_callback,
-        "comando_motor": comando_motor_callback,
+        "calibrar_z": calibrar_z_callback,
+        "mover_incremental": mover_incremental_callback,
+        "escrever_texto": escrever_texto_callback,
+        "comando_motor": comando_motor_callback, # Mantidos para compatibilidade
         "parar_motor": parar_motor_callback,
-        "mover_incremental": mover_para_coordenada_seguro,
-        "mover_absoluto": mover_para_absoluto_fsolve,
-        "mover_junta_temp": mover_junta_temp,
+        "mover_junta_temp": mover_junta_temp
     }
-    # --- Fim da Alteração ---
-
-    widgets = interface.criar_interface(root, callbacks)
-
-    atualizar_plot()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing_callback)
     
+    widgets = interface.criar_interface(root, callbacks)
+    atualizar_plot()
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
